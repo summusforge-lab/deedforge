@@ -1,4 +1,5 @@
-use crate::listing::{Listing, ListingStatus};
+use crate::listing::{Listing, ListingStatus, ListingType};
+use std::fmt;
 
 pub struct PropertyItem {
     pub id: i32,
@@ -12,6 +13,9 @@ pub enum RegistryError {
     PropertyNotFound,
     UnauthorizedTransfer,
     PropertyInvalid,
+    PropertyAlreadyActive,
+    ListingNotFound,
+    ListingInvalid,
 }
 pub struct TransferRecord {
     pub property_id: i32,
@@ -22,17 +26,43 @@ pub struct TransferRecord {
 pub struct Registry {
     properties: Vec<PropertyItem>,
     transfer_history: Vec<TransferRecord>,
-    listing: Vec<Listing>,
+    listings: Vec<Listing>,
+}
+
+impl fmt::Display for RegistryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RegistryError::PropertyAlreadyExists => {
+                write!(f, "property already exists")
+            }
+            RegistryError::PropertyNotFound => {
+                write!(f, "property not found in the registry")
+            }
+            RegistryError::UnauthorizedTransfer => {
+                write!(f, "unauthorized transfer")
+            }
+            RegistryError::PropertyInvalid => {
+                write!(f, "invalid property")
+            }
+            RegistryError::ListingNotFound => {
+                write!(f, "listing not found")
+            }
+            RegistryError::PropertyAlreadyActive => {
+                write!(f, "property is active already")
+            }
+            RegistryError::ListingInvalid => {
+                write!(f, "Listing is invalid")
+            }
+        }
+    }
 }
 
 impl Registry {
+    //SECTION: Initialization
     pub fn new() -> Self {
-        Self {
-            properties: Vec::new(),
-            transfer_history: Vec::new(),
-            listing: Vec::new(),
-        }
+        Self::default()
     }
+    //SECTION: work with propery
     //MARK: Validate data
     fn is_valid_property(&self, item: &PropertyItem) -> bool {
         !item.name.is_empty() && !item.owner.is_empty() && !item.doc_hash.is_empty()
@@ -86,7 +116,7 @@ impl Registry {
         }
     }
     //MARK: Get property by ID
-    pub fn get(&self, property_id: i32) -> Option<&PropertyItem> {
+    pub fn get_property(&self, property_id: i32) -> Option<&PropertyItem> {
         self.properties.iter().find(|prop| prop.id == property_id)
     }
     //MARK: Transfers' history
@@ -96,163 +126,69 @@ impl Registry {
             .filter(|record| record.property_id == property_id)
             .collect()
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::assert_matches;
-
-    fn prepare_data(item_number: usize) -> Registry {
-        let mut registry = Registry::new();
-
-        for i in 0..item_number {
-            let name = format!("Name {}", i);
-            let item = PropertyItem {
-                id: i as i32,
-                name,
-                owner: String::from("0x0"),
-                doc_hash: String::from("0x0"),
-            };
-            let _ = registry.add_property(item);
+    //SECTION: work with listings
+    //MARK: get listings
+    pub fn listings(&self) -> &[Listing] {
+        &self.listings
+    }
+    //MARK: get listing by id
+    pub fn get_listing(&self, id: i32) -> Option<&Listing> {
+        self.listings.iter().find(|list| list.id == id)
+    }
+    //MARK: Validate listing
+    fn listing_valid(&self, listing_item: &Listing) -> bool {
+        listing_item.price > 0 && !listing_item.realtor.is_empty()
+    }
+    //MARK: Add listings
+    pub fn add_listing(
+        &mut self,
+        property_id: i32,
+        listing_type: ListingType,
+        price: u64,
+        realtor: String,
+    ) -> Result<(), RegistryError> {
+        if !self.properties.iter().any(|prop| prop.id == property_id) {
+            return Err(RegistryError::PropertyNotFound);
         }
 
-        registry
-    }
-    #[test]
-    fn adds_property_to_registry() {
-        let mut registry = prepare_data(5);
-        let initial_count = registry.count();
-        let new_item = PropertyItem {
-            id: registry.list().len() as i32,
-            name: String::from("New item"),
-            owner: String::from("0x0"),
-            doc_hash: String::from("0x0"),
+        let listing = Listing {
+            id: self.listings().len() as i32,
+            property_id,
+            listing_type,
+            price,
+            realtor,
+            status: ListingStatus::Active,
         };
-        let result = registry.add_property(new_item);
-        assert!(result.is_ok());
-        assert_eq!(registry.count(), initial_count + 1);
-        assert_eq!(
-            registry
-                .get(initial_count as i32)
-                .expect("new property should exist")
-                .name,
-            "New item"
-        );
-    }
-    #[test]
-    fn rejects_duplicate_property_id() {
-        let mut registry = prepare_data(5);
-        let initial_count = registry.count();
-        let new_item = PropertyItem {
-            id: 0_i32,
-            name: String::from("New item"),
-            owner: String::from("0x0"),
-            doc_hash: String::from("0x0"),
-        };
-        let result = registry.add_property(new_item);
-        assert_matches!(result, Err(RegistryError::PropertyAlreadyExists));
-        assert_eq!(registry.count(), initial_count);
-    }
-    #[test]
-    fn owner_can_transfer_property() {
-        let mut registry = prepare_data(5);
-        let result = registry.transfer(0, String::from("0x0"), String::from("0x1"));
-        assert!(result.is_ok());
-        assert_eq!(
-            registry
-                .get(0)
-                .expect("transferred property should exist")
-                .owner,
-            "0x1"
-        );
-    }
-    #[test]
-    fn non_owner_cannot_transfer_property() {
-        let mut registry = prepare_data(5);
-        let result = registry.transfer(0, String::from("0x2"), String::from("0x1"));
-        assert_matches!(result, Err(RegistryError::UnauthorizedTransfer));
-        assert_eq!(
-            registry.get(0).expect("property should still exist").owner,
-            "0x0"
-        );
-    }
-    #[test]
-    fn cannot_transfer_missing_property() {
-        let mut registry = prepare_data(5);
-        let result = registry.transfer(6, String::from("0x2"), String::from("0x1"));
-        assert_matches!(result, Err(RegistryError::PropertyNotFound));
-    }
-    #[test]
-    fn get_existing_property() {
-        let registry = prepare_data(5);
-        let property = registry.get(0);
-        let property = property.expect("property should exist");
-        assert_eq!(property.id, 0);
-        assert_eq!(property.name, "Name 0");
-        assert_eq!(property.owner, "0x0");
-    }
-    #[test]
-    fn get_unknown_property() {
-        let registry = prepare_data(5);
-        let property = registry.get(9);
-        assert!(property.is_none());
-    }
-    #[test]
-    fn empty_property_field() {
-        let mut registry = prepare_data(5);
-        //let initial_count = registry.count();
-        let new_item = PropertyItem {
-            id: registry.list().len() as i32,
-            name: String::from(""),
-            owner: String::from("0xf"),
-            doc_hash: String::from("0x0"),
-        };
-        let result = registry.add_property(new_item);
-        assert_matches!(result, Err(RegistryError::PropertyInvalid));
-        let new_item2 = PropertyItem {
-            id: registry.list().len() as i32,
-            name: String::from("0xf"),
-            owner: String::new(),
-            doc_hash: String::from("0x0"),
-        };
-        let result = registry.add_property(new_item2);
-        assert_matches!(result, Err(RegistryError::PropertyInvalid));
-
-        let new_item3 = PropertyItem {
-            id: registry.list().len() as i32,
-            name: String::from("0xf"),
-            owner: String::from("0xf"),
-            doc_hash: String::new(),
-        };
-        let result = registry.add_property(new_item3);
-        assert_matches!(result, Err(RegistryError::PropertyInvalid));
-    }
-    //NOTE: transfer history tests
-    #[test]
-    fn transfer_added_to_history() {
-        let mut registry = prepare_data(5);
-        let _ = registry.transfer(0, String::from("0x0"), String::from("0x1"));
-        let history = registry.history(0);
-        assert_ne!(history.len(), 0);
-        assert_eq!(history.len(), 1);
-        let record = history[0];
-        assert_eq!(record.from, String::from("0x0"));
-        assert_eq!(record.to, String::from("0x1"));
-    }
-    #[test]
-    fn transfer_missing_property() {
-        let mut registry = prepare_data(5);
-        let _ = registry.transfer(6, String::from("0x0"), String::from("0x1"));
-        let history = registry.history(6);
-        assert_eq!(history.len(), 0);
+        if self.listings().iter().any(|item| {
+            item.property_id == listing.property_id && item.status == ListingStatus::Active
+        }) {
+            return Err(RegistryError::PropertyAlreadyActive);
+        }
+        if self.listing_valid(&listing) {
+            self.listings.push(listing);
+            Ok(())
+        } else {
+            Err(RegistryError::ListingInvalid)
+        }
     }
 
-    #[test]
-    fn unauthorized_transfer() {
-        let mut registry = prepare_data(5);
-        let _ = registry.transfer(0, String::from("0x2"), String::from("0x1"));
-        let history = registry.history(0);
-        assert_eq!(history.len(), 0);
+    //MARK: Close listing
+    pub fn close_listing(&mut self, listing_id: i32) -> Result<(), RegistryError> {
+        let list = self
+            .listings
+            .iter_mut()
+            .find(|listing| listing.id == listing_id);
+        match list {
+            Some(list) => {
+                list.status = ListingStatus::Closed;
+                Ok(())
+            }
+            None => Err(RegistryError::ListingNotFound),
+        }
     }
 }
+
+//SECTION: Tests
+#[cfg(test)]
+#[path = "registry_tests.rs"]
+mod registry_tests;
